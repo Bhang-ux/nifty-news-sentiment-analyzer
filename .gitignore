@@ -1,0 +1,55 @@
+# === SECRETS — NEVER COMMIT ===
+.env
+*.env
+
+# === DATABASES ===
+*.db
+*.sqlite
+*.sqlite3
+
+# === PYTHON ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# === LOGS ===
+*.log
+app.log
+scraper_run_logs_and_processed_urls/
+
+# === SCRAPY ===
+.scrapy/
+google_captcha_pages/
+
+# === PLAYWRIGHT ===
+playwright/.local-browsers/
+
+# === TEST FILES ===
+test_selectors.py
+test_fetcher.py
+test_fetcher2.py
+moneycontrol_actual.html
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === MISC ===
+*.bak
+populate_from_newsapi.py

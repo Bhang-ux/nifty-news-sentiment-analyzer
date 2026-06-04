@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nifty News Sentiment Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script> <!-- For time series -->
+</head>
+<body>
+    <div class="container">
+        <h1>Nifty News Sentiment Analyzer</h1>
+        <p>Server Date: <strong id="systemActualToday">{{ system_actual_today }}</strong></p>
+
+        <div id="error-messages-container" class="errors" style="display: none;">
+            <h3>Errors:</h3>
+            <ul id="error-list"></ul>
+        </div>
+
+        <div class="main-layout">
+            <aside class="sidebar">
+                <h2>Configuration</h2>
+                <form id="apiConfigForm">
+                    <h3>API Keys (Session)</h3>
+                    <label for="gemini_key_sess_in">Gemini API Key:</label>
+                    <input type="password" id="gemini_key_sess_in" name="gemini_key_sess_in" placeholder="Update Gemini session key">
+                    
+                    <label for="newsapi_key_sess_in">NewsAPI.org Key:</label>
+                    <input type="password" id="newsapi_key_sess_in" name="newsapi_key_sess_in" placeholder="Update NewsAPI session key">
+                    
+                    <button type="button" id="updateApiKeysBtn">Update Keys</button>
+                    <hr>
+                </form>
+
+                <form id="analysisForm">
+                    <h3>Analysis & Data Operations</h3>
+                    
+                    <label for="analysis_mode_select">Operation Mode:</label>
+                    <select id="analysis_mode_select" name="analysis_mode_select">
+                        <option value="sector_batch_analysis" selected>Batch Sector Sentiment Analysis (DB)</option>
+                        <option value="stock_adhoc_analysis_scrape">Ad-hoc Stock/Sector Analysis (+Scrape)</option>
+                        <!-- <option value="backtester" disabled>Backtester (Coming Soon)</option> -->
+                    </select>
+                    <hr>
+
+                    <!-- Common Date Inputs -->
+                    <div id="common_date_inputs">
+                        <label for="start_date">Start Date:</label>
+                        <input type="date" id="start_date" name="start_date" value="{{ one_month_ago_date }}">
+                        <label for="end_date">End Date:</label>
+                        <input type="date" id="end_date" name="end_date" value="{{ default_end_date }}" max="{{ system_actual_today }}">
+                    </div>
+                    <hr>
+
+
+                    <!-- Inputs for Batch Sector Analysis -->
+                    <div id="batch_sector_analysis_inputs_div">
+                        <h4>Batch Sector Analysis (from DB)</h4>
+                        <label for="selected_sectors">Select Nifty Sector(s):</label>
+                        <select id="selected_sectors" name="selected_sectors" multiple size="5">
+                            {% for sector in sector_options %}
+                                <option value="{{ sector }}">{{ sector }}</option>
+                            {% endfor %}
+                        </select>
+                        <small>Uses data from local DB for the date range specified above (Start Date to End Date).</small>
+                    </div>
+
+                    <!-- Inputs for Ad-hoc Stock/Sector Analysis & Scraping -->
+                    <div id="adhoc_analysis_scrape_inputs_div" style="display: none;">
+                        <h4>Ad-hoc Stock/Sector Analysis (+ Optional Scrape)</h4>
+                        <label for="adhoc_target_type">Target Type:</label>
+                        <select id="adhoc_target_type" name="adhoc_target_type">
+                            <option value="stock" selected>Stock</option>
+                            <option value="sector">Sector</option>
+                        </select>
+
+                        <label for="adhoc_target_name">Target Name/Ticker (e.g., TCS, Nifty IT):</label>
+                        <input type="text" id="adhoc_target_name" name="adhoc_target_name" placeholder="Enter Stock Ticker or Sector Name">
+                        
+                        <label for="adhoc_news_source">News Source Priority:</label>
+                        <select id="adhoc_news_source" name="adhoc_news_source">
+                            <option value="local_db_then_newsapi" selected>Local DB first, then NewsAPI</option>
+                            <option value="local_db_only">Local DB Only</option>
+                            <option value="newsapi_only">NewsAPI.org Only</option>
+                        </select>
+
+                        <input type="checkbox" id="trigger_adhoc_scrape" name="trigger_adhoc_scrape" value="yes">
+                        <label for="trigger_adhoc_scrape">Trigger Fresh Scrape for Target & Dates?</label>
+                        <small>(If checked, will attempt to scrape for the target within the Start/End dates above BEFORE analysis. Use for small date ranges.)</small>
+                        <br>
+                        <label for="adhoc_scrape_domains">Scrape Domains (comma-separated if scraping):</label>
+                        <input type="text" id="adhoc_scrape_domains" name="adhoc_scrape_domains" value="moneycontrol.com,economictimes.indiatimes.com,livemint.com">
+                    </div>
+                    <hr>
+                    
+                    <!-- Common LLM Parameters -->
+                    <div id="common_llm_params_div">
+                        <h4>LLM & Article Parameters</h4>
+                        <label for="max_articles_llm">Max Articles for LLM (per target):</label>
+                        <input type="number" id="max_articles_llm" name="max_articles_llm" value="5" min="1" max="20">
+
+                        <label for="custom_prompt_llm">LLM Instructions (Optional):</label>
+                        <textarea id="custom_prompt_llm" name="custom_prompt_llm" rows="3" placeholder="e.g., Focus on financial impact..."></textarea>
+                    </div>
+                    <hr>
+
+                    <button type="submit" id="runAnalysisBtn">Run Operation</button>
+                    <div id="loading-indicator" style="display: none;">
+                        <p>Processing... Please wait.</p>
+                        <div class="spinner"></div>
+                    </div>
+                </form>
+            </aside>
+
+            <main class="content">
+                <h2>Results</h2>
+                <div id="results-summary">
+                    <p>Configure and run an operation.</p>
+                </div>
+                
+                <!-- For Batch Sector Analysis -->
+                <div id="sector-charts-container"></div>
+                <div id="sector-details-container">
+                    <!-- Batch Sector and subsequent stock details will be dynamically inserted here -->
+                </div>
+
+                <!-- For Ad-hoc Stock/Sector Analysis -->
+                <div id="adhoc-result-container" style="display:none;">
+                    <h3 id="adhoc-result-title"></h3>
+                    <div id="adhoc-sentiment-price-chart-container" class="chart-wrapper" style="height: 350px;">
+                        <canvas id="adhocSentimentPriceChart"></canvas>
+                    </div>
+                    <div id="adhoc-llm-analysis-details" class="result-item"></div>
+                    <div id="adhoc-articles-table-container">
+                        <h4>Fetched Articles:</h4>
+                        <table id="adhoc-articles-table">
+                            <thead><tr><th>Date</th><th>Source</th><th>Headline/Content Snippet</th><th>VADER</th><th>LLM (Article)</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </main>
+        </div>
+
+        <div class="logs-container">
+            <h2>Processing Log <small>(UI messages for current run)</small></h2>
+            <button id="clearLogsBtn">Clear Logs</button>
+            <div id="logs-output" class="logs-output-div"></div>
+        </div>
+    </div>
+
+    <script id="sectorStockConfig" type="application/json">
+        {{ sector_stock_config_json | safe }}
+    </script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
