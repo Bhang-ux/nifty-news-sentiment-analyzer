@@ -5,26 +5,19 @@ from flask import Flask, render_template, request, jsonify, session as flask_ses
 from datetime import datetime, timedelta, timezone
 import json
 import time
-import random # For random delays if needed further
 from sqlalchemy.orm import Session
 import pandas as pd
 import yfinance as yf
-
+ 
 # Project-specific utils
 from utils import gemini_utils, sentiment_analyzer, db_crud, newsapi_helpers
 from utils.database_models import SessionLocal, create_db_and_tables, ScrapedArticle
-# On-demand fetcher — replaces the broken newsfetch_lib (works on Windows + Python 3.13)
-try:
-    from on_demand_fetcher import fetch_articles_for_target as on_demand_fetch
-    ON_DEMAND_AVAILABLE = True
-except ImportError:
-    ON_DEMAND_AVAILABLE = False
-
+ 
 import config # Your project's config.py
-
+ 
 app = Flask(__name__)
 app.secret_key = config.FLASK_SECRET_KEY
-
+ 
 # --- Logging Setup ---
 # (Your existing comprehensive logging setup)
 logging.basicConfig(
@@ -39,14 +32,10 @@ logger = logging.getLogger(__name__) # Main app logger
 logging.getLogger("werkzeug").setLevel(logging.INFO)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("nltk").setLevel(logging.INFO)
-logging.getLogger("selenium.webdriver.remote.remote_connection").setLevel(logging.WARNING)
-logging.getLogger("undetected_chromedriver").setLevel(logging.INFO) # INFO to see UC's actions
-logging.getLogger("utils.newsfetch_lib.google").setLevel(logging.INFO) # Control your google.py logs
 logging.getLogger("yfinance").setLevel(logging.WARNING) # yfinance can be verbose
-logging.getLogger("newsplease").setLevel(logging.INFO)
 logging.getLogger("fake_useragent").setLevel(logging.WARNING)
-
-
+ 
+ 
 # --- Database ---
 def get_db():
     db = SessionLocal()
@@ -54,15 +43,15 @@ def get_db():
         yield db
     finally:
         db.close()
-
+ 
 # --- API Key Management ---
 def get_api_keys_from_session_or_config():
     gemini_key = flask_session.get('gemini_key_sess', config.GEMINI_API_KEY)
     newsapi_key = flask_session.get('newsapi_key_sess', config.NEWSAPI_ORG_API_KEY)
-
+ 
     is_gemini_valid = bool(gemini_key and gemini_key != config.GEMINI_API_KEY_PLACEHOLDER)
     is_newsapi_valid = bool(newsapi_key and newsapi_key != config.NEWSAPI_ORG_API_KEY_PLACEHOLDER)
-
+ 
     logger.debug(
         f"API Keys - Gemini Valid: {is_gemini_valid} (Key ending: ...{gemini_key[-5:] if gemini_key and len(gemini_key) > 5 else 'N/A'}), "
         f"NewsAPI Valid: {is_newsapi_valid} (Key ending: ...{newsapi_key[-5:] if newsapi_key and len(newsapi_key) > 5 else 'N/A'})"
@@ -71,7 +60,7 @@ def get_api_keys_from_session_or_config():
         'gemini': gemini_key, 'newsapi': newsapi_key,
         'gemini_is_valid': is_gemini_valid, 'newsapi_is_valid': is_newsapi_valid
     }
-
+ 
 # --- UI Log Helper ---
 def setup_local_logger(ui_log_list):
     def append_log_local(message, level='INFO'):
@@ -83,7 +72,7 @@ def setup_local_logger(ui_log_list):
          elif level_upper == 'WARNING': logger.warning(f"UI_LOG_RELAY: {message}")
          else: logger.info(f"UI_LOG_RELAY: {message}")
     return append_log_local
-
+ 
 # --- Date Parsing Helper ---
 def robust_date_parse(date_str):
      if not date_str: return None
@@ -92,11 +81,11 @@ def robust_date_parse(date_str):
          except (ValueError, TypeError): continue
      logger.warning(f"Could not parse date string from UI: '{date_str}' with known formats.")
      return None
-
+ 
 def parse_date_for_google_search(date_obj):
     if not date_obj: return None
     return date_obj.strftime('%m/%d/%Y') # MM/DD/YYYY for Google tbs parameter
-
+ 
 # === ROUTES ===
 @app.route('/')
 def index_page():
@@ -114,7 +103,7 @@ def index_page():
         })
     }
     return render_template('index.html', **context)
-
+ 
 @app.route('/api/update-api-keys', methods=['POST'])
 def update_api_keys_route():
     data = request.json
@@ -130,7 +119,7 @@ def update_api_keys_route():
         return jsonify({"message": "No API keys provided to update."}), 400
     logger.info(f"Session API Keys updated: {'; '.join(log_updates)}")
     return jsonify({"message": "Session API keys processed."})
-
+ 
 def process_articles_for_llm(articles_list, target_name_for_log, db_session: Session, source_type="db"):
     processed_list = []
     if not articles_list: return processed_list
@@ -142,7 +131,7 @@ def process_articles_for_llm(articles_list, target_name_for_log, db_session: Ses
         source_name = 'N/A'
         vader_s = None
         db_id = None
-
+ 
         if source_type == "db" and isinstance(art_data, ScrapedArticle):
             if not art_data.article_text:
                 logger.debug(f"Skipping DB article (no text): {art_data.url} for {target_name_for_log}")
@@ -166,14 +155,14 @@ def process_articles_for_llm(articles_list, target_name_for_log, db_session: Ses
             pub_date_str = art_data.get('date', 'N/A')
             source_name = art_data.get('source', 'NewsAPI.org')
             vader_s = art_data.get('vader_score') # Should be pre-calculated by newsapi_helpers
-
+ 
         if content_to_analyze and uri:
             processed_list.append({
                 'content': content_to_analyze, 'date': pub_date_str, 'uri': uri,
                 'source': source_name, 'vader_score': vader_s, 'db_id': db_id
             })
     return processed_list
-
+ 
 @app.route('/api/sector-analysis', methods=['POST'])
 def perform_sector_analysis_route():
     form_data = request.json
@@ -184,7 +173,7 @@ def perform_sector_analysis_route():
     current_api_keys = get_api_keys_from_session_or_config()
     results_payload = []
     user_facing_errors = []
-
+ 
     selected_sectors = form_data.get('selected_sectors')
     if not selected_sectors or not isinstance(selected_sectors, list) or not all(selected_sectors):
         user_facing_errors.append("Please select at least one valid sector.")
@@ -195,15 +184,15 @@ def perform_sector_analysis_route():
     end_date_str = form_data.get('end_date')
     if not start_date_str or not end_date_str:
         user_facing_errors.append("Start and End dates are required.")
-
+ 
     if user_facing_errors:
         logger.warning(f"Batch Sector Analysis validation failed: {user_facing_errors}")
         return jsonify({'error': True, 'messages': user_facing_errors, 'logs': ui_log_messages, 'results': []}), 400
-
+ 
     query_start_date = robust_date_parse(start_date_str)
     query_end_date = robust_date_parse(end_date_str)
     actual_today_server = datetime.now(timezone.utc).date()
-
+ 
     if not query_start_date or not query_end_date:
         user_facing_errors.append("Invalid Start or End date format.")
     elif query_start_date > query_end_date:
@@ -213,7 +202,7 @@ def perform_sector_analysis_route():
         return jsonify({'error': True, 'messages': user_facing_errors, 'logs': ui_log_messages, 'results': []}), 400
         
     query_end_date = min(query_end_date, actual_today_server) # Cap end date
-
+ 
     try:
         max_articles_llm = int(form_data.get('sector_max_articles', 5)) # This key comes from JS
         if max_articles_llm < 1: max_articles_llm = 1
@@ -225,7 +214,7 @@ def perform_sector_analysis_route():
     custom_prompt = form_data.get('sector_custom_prompt', '')
     llm_context_range_str = f"{query_start_date.strftime('%Y-%m-%d')} to {query_end_date.strftime('%Y-%m-%d')}"
     append_log_local(f"Batch Sector Analysis - Dates: {llm_context_range_str}, Max articles/sector for LLM: {max_articles_llm}", "INFO")
-
+ 
     for sector_name in selected_sectors:
         append_log_local(f"--- Processing SECTOR: {sector_name} ---", "INFO")
         sector_cfg = gemini_utils.NIFTY_SECTORS_QUERY_CONFIG.get(sector_name, {})
@@ -249,7 +238,7 @@ def perform_sector_analysis_route():
         if all_vader_scores:
             vader_avg = sentiment_analyzer.get_average_vader_score(all_vader_scores)
             vader_label = sentiment_analyzer.get_sentiment_label_from_score(vader_avg)
-
+ 
         results_payload.append({
             'sector_name': sector_name, 'llm_context_date_range': llm_context_range_str,
             'num_articles_for_llm_sector': len(articles_for_llm),
@@ -259,7 +248,7 @@ def perform_sector_analysis_route():
         })
     append_log_local("--- Batch Sector analysis finished. ---", "INFO")
     return jsonify({'error': False, 'messages': ["Batch Sector analysis complete."], 'results': results_payload, 'logs': ui_log_messages})
-
+ 
 @app.route('/api/stock-analysis', methods=['POST'])
 def perform_sub_stock_analysis_route():
     form_data = request.json
@@ -270,27 +259,27 @@ def perform_sub_stock_analysis_route():
     current_api_keys = get_api_keys_from_session_or_config()
     results_payload = []
     user_facing_errors = []
-
+ 
     sector_name = form_data.get('sector_name')
     selected_stocks = form_data.get('selected_stocks')
     start_date_str = form_data.get('start_date') # From main form, passed by JS
     end_date_str = form_data.get('end_date')     # From main form, passed by JS
-
+ 
     if not sector_name or not selected_stocks or not isinstance(selected_stocks, list) or not all(selected_stocks):
         user_facing_errors.append("Sector name and at least one stock selection are required.")
     if not current_api_keys.get('gemini_is_valid'):
         user_facing_errors.append("Gemini API key is not configured or is a placeholder.")
     if not start_date_str or not end_date_str:
         user_facing_errors.append("Start and End dates are required.")
-
+ 
     if user_facing_errors:
         logger.warning(f"Sub-Stock Analysis validation failed: {user_facing_errors}")
         return jsonify({'error': True, 'messages': user_facing_errors, 'logs': ui_log_messages, 'results_stocks': []}), 400
-
+ 
     query_start_date = robust_date_parse(start_date_str)
     query_end_date = robust_date_parse(end_date_str)
     actual_today_server = datetime.now(timezone.utc).date()
-
+ 
     if not query_start_date or not query_end_date:
         user_facing_errors.append("Invalid Start or End date format for sub-stock analysis.")
     elif query_start_date > query_end_date:
@@ -300,7 +289,7 @@ def perform_sub_stock_analysis_route():
         return jsonify({'error': True, 'messages': user_facing_errors, 'logs': ui_log_messages, 'results_stocks': []}), 400
         
     query_end_date = min(query_end_date, actual_today_server)
-
+ 
     try:
         max_articles_llm = int(form_data.get('stock_max_articles', 3)) # This key comes from JS
         if max_articles_llm < 1: max_articles_llm = 1
@@ -312,17 +301,17 @@ def perform_sub_stock_analysis_route():
     custom_prompt = form_data.get('custom_prompt', '') # This key comes from JS
     llm_context_range_str = f"{query_start_date.strftime('%Y-%m-%d')} to {query_end_date.strftime('%Y-%m-%d')}"
     append_log_local(f"Sub-Stock analysis for '{sector_name}' stocks. Dates: {llm_context_range_str}, Max articles/stock: {max_articles_llm}", "INFO")
-
+ 
     sector_cfg = gemini_utils.NIFTY_SECTORS_QUERY_CONFIG.get(sector_name, {})
     stock_keywords_map = sector_cfg.get("stocks", {})
-
+ 
     for stock_name in selected_stocks:
         append_log_local(f"--- Processing STOCK: {stock_name} (Sector: {sector_name}) ---", "INFO")
         db_keywords = [stock_name] + stock_keywords_map.get(stock_name, [])[:2]
         
         db_articles = db_crud.get_articles_for_analysis(db, query_start_date, query_end_date, list(set(db_keywords)), limit=max_articles_llm * 2)
         articles_for_llm = process_articles_for_llm(db_articles, stock_name, db, source_type="db")[:max_articles_llm]
-
+ 
         stock_error, gemini_result, vader_avg, vader_label = None, None, 0.0, "Neutral"
         if not articles_for_llm:
             stock_error = f"No relevant articles found in DB for stock '{stock_name}' for LLM."
@@ -346,7 +335,7 @@ def perform_sub_stock_analysis_route():
         if all_vader_scores:
             vader_avg = sentiment_analyzer.get_average_vader_score(all_vader_scores)
             vader_label = sentiment_analyzer.get_sentiment_label_from_score(vader_avg)
-
+ 
         results_payload.append({
             'stock_name': stock_name, 'llm_context_date_range': llm_context_range_str,
             'num_articles_for_llm_stock': len(articles_for_llm),
@@ -355,7 +344,7 @@ def perform_sub_stock_analysis_route():
         })
     append_log_local(f"--- Sub-Stock analysis for sector '{sector_name}' finished. ---", "INFO")
     return jsonify({'error': False, 'messages': [f"Stock analysis for '{sector_name}' complete."], 'results_stocks': results_payload, 'sector_name': sector_name, 'logs': ui_log_messages})
-
+ 
 @app.route('/api/adhoc-analysis-scrape', methods=['POST'])
 def adhoc_analysis_scrape_route():
     form_data = request.json
@@ -365,7 +354,7 @@ def adhoc_analysis_scrape_route():
     db: Session = next(get_db())
     current_api_keys = get_api_keys_from_session_or_config()
     user_facing_errors = []
-
+ 
     target_name = form_data.get('target_name', '').strip()
     target_type = form_data.get('target_type', 'stock')
     start_date_str = form_data.get('start_date')
@@ -375,7 +364,7 @@ def adhoc_analysis_scrape_route():
     scrape_domains_raw = form_data.get('scrape_domains', [])
     scrape_domains = [d.strip().lower() for d in scrape_domains_raw if isinstance(d, str) and d.strip()] if isinstance(scrape_domains_raw, list) else []
     custom_prompt = form_data.get('custom_prompt_llm', '')
-
+ 
     if not target_name: user_facing_errors.append("Target name/ticker is required.")
     if not start_date_str or not end_date_str: user_facing_errors.append("Start and End dates are required.")
     if not current_api_keys.get('gemini_is_valid'):
@@ -383,22 +372,20 @@ def adhoc_analysis_scrape_route():
     if ('newsapi' in news_source_priority or news_source_priority == 'newsapi_only') and \
        (not current_api_keys.get('newsapi_is_valid')):
         user_facing_errors.append("NewsAPI key is not valid but selected as a source.")
-    if trigger_scrape and not scrape_domains:
-        user_facing_errors.append("If triggering scrape, at least one domain must be provided.")
     try:
         max_articles_llm = int(form_data.get('max_articles_llm', 5))
         if max_articles_llm < 1: max_articles_llm = 1
     except ValueError:
         user_facing_errors.append("Invalid value for Max articles for LLM."); max_articles_llm = 5
-
+ 
     if user_facing_errors:
         logger.warning(f"Ad-hoc request validation failed: {user_facing_errors}")
         return jsonify({'error': True, 'messages': user_facing_errors, 'logs': ui_log_messages}), 400
-
+ 
     query_start_date_obj = robust_date_parse(start_date_str)
     query_end_date_obj = robust_date_parse(end_date_str)
     actual_today_server = datetime.now(timezone.utc).date()
-
+ 
     if not query_start_date_obj or not query_end_date_obj:
         user_facing_errors.append("Invalid Start or End date format.")
     elif query_start_date_obj > query_end_date_obj:
@@ -411,12 +398,18 @@ def adhoc_analysis_scrape_route():
     
     llm_context_range_str = f"{query_start_date_obj.strftime('%Y-%m-%d')} to {query_end_date_obj.strftime('%Y-%m-%d')}"
     append_log_local(f"Ad-hoc analysis for '{target_name}' ({target_type}). Dates: {llm_context_range_str}", "INFO")
-
+ 
     if trigger_scrape:
-        append_log_local(f"Triggering on-demand Google scrape for '{target_name}' on domains: {scrape_domains}", "INFO")
-        run_on_demand_google_scrape(target_name, target_type, query_start_date_obj, query_end_date_obj, scrape_domains, db, append_log_local)
-        append_log_local("On-demand Google scrape attempt finished.", "INFO")
-    
+        # On-demand scraping is currently unavailable — on_demand_fetcher.py was removed.
+        # Kept as a graceful no-op (rather than deleting the whole trigger_scrape code path)
+        # so the frontend doesn't break if it still sends trigger_scrape=true.
+        # Local DB + NewsAPI fetching below are unaffected and still work normally.
+        append_log_local(
+            f"On-demand scraping requested for '{target_name}' but is currently unavailable "
+            f"(on_demand_fetcher.py removed). Skipping scrape, continuing with Local DB / NewsAPI only.",
+            "WARNING"
+        )
+ 
     articles_for_analysis = []
     
     if news_source_priority in ['local_db_then_newsapi', 'local_db_only']:
@@ -433,7 +426,7 @@ def adhoc_analysis_scrape_route():
         db_articles = db_crud.get_articles_for_analysis(db, query_start_date_obj, query_end_date_obj, list(set(db_keywords)), limit=max_articles_llm * 2)
         articles_for_analysis.extend(process_articles_for_llm(db_articles, target_name, db, source_type="db"))
         append_log_local(f"Found {len(articles_for_analysis)} articles from DB.", "INFO")
-
+ 
     newsapi_err_msg = None
     if news_source_priority == 'newsapi_only' or \
        (news_source_priority == 'local_db_then_newsapi' and len(articles_for_analysis) < max_articles_llm):
@@ -453,7 +446,7 @@ def adhoc_analysis_scrape_route():
                 elif target_type == "sector":
                      cfg = gemini_utils.NIFTY_SECTORS_QUERY_CONFIG.get(target_name, {})
                      api_keywords.extend(cfg.get("newsapi_keywords", [])[:3])
-
+ 
                 newsapi_data, newsapi_err_msg = newsapi_helpers.fetch_newsapi_articles(
                     newsapi_client, target_name, list(set(api_keywords)), gemini_utils.NEWSAPI_INDIA_MARKET_KEYWORDS,
                     query_start_date_obj, query_end_date_obj, max_articles_to_fetch=needed, append_log_func=append_log_local
@@ -464,7 +457,7 @@ def adhoc_analysis_scrape_route():
                 append_log_local(f"Total articles after NewsAPI: {len(articles_for_analysis)}.", "INFO")
             elif client_err: newsapi_err_msg = client_err; append_log_local(newsapi_err_msg, "ERROR")
         elif needed > 0: append_log_local("Skipping NewsAPI (key not valid or no articles needed).", "WARNING")
-
+ 
     articles_for_analysis.sort(key=lambda x: x.get('date', '1970-01-01'), reverse=True)
     articles_trimmed_for_llm = articles_for_analysis[:max_articles_llm]
     llm_analysis_result, current_target_error = None, newsapi_err_msg
@@ -481,7 +474,7 @@ def adhoc_analysis_scrape_route():
             target_name, llm_context_range_str, custom_prompt, append_log_local, target_type=target_type
         )
         if gemini_err: current_target_error = (current_target_error + "; " + gemini_err) if current_target_error else gemini_err
-
+ 
     daily_sentiment_data = []
     if articles_for_analysis:
         df = pd.DataFrame([a for a in articles_for_analysis if a.get('vader_score') is not None and a.get('date') != 'N/A'])
@@ -494,7 +487,7 @@ def adhoc_analysis_scrape_route():
                 daily_avg['date'] = daily_avg['date'].astype(str)
                 daily_sentiment_data = daily_avg.to_dict('records')
     append_log_local(f"Prepared {len(daily_sentiment_data)} daily sentiment points for chart.", "DEBUG")
-
+ 
     price_data = get_yfinance_prices(target_name, query_start_date_obj.strftime('%Y-%m-%d'), query_end_date_obj.strftime('%Y-%m-%d'), append_log_local) if target_type == "stock" else []
     
     return jsonify({
@@ -503,7 +496,7 @@ def adhoc_analysis_scrape_route():
         'articles_analyzed': articles_trimmed_for_llm, 'all_articles_fetched_count': len(articles_for_analysis),
         'daily_sentiment_data': daily_sentiment_data, 'price_data': price_data, 'logs': ui_log_messages
     })
-
+ 
 def get_yfinance_prices(ticker, start_date_str, end_date_str, append_log_local):
     if not ticker: append_log_local("No ticker for yfinance.", "ERROR"); return []
     ticker_yf = ticker.upper()
@@ -544,122 +537,7 @@ def get_yfinance_prices(ticker, start_date_str, end_date_str, append_log_local):
         append_log_local(f"General error yfinance for {ticker_yf}: {e}", "ERROR")
         logger.error(f"Full yfinance error {ticker_yf}:", exc_info=True)
         return []
-
-def run_on_demand_google_scrape(target_name, target_type, start_date_obj, end_date_obj, domains_to_scrape, db_session, append_log_local):
-    # ── NEW: Use on_demand_fetcher instead of broken newsfetch_lib ──
-    if ON_DEMAND_AVAILABLE:
-        append_log_local(f"Using OnDemandFetcher for '{target_name}'", "INFO")
-        try:
-            from utils.database_models import ScrapedArticle
-            from utils.sentiment_analyzer import get_vader_sentiment_score
-            from datetime import timezone
-            articles = on_demand_fetch(
-                target_name=target_name, target_type=target_type,
-                from_date=start_date_obj.strftime("%Y-%m-%d"),
-                to_date=end_date_obj.strftime("%Y-%m-%d"),
-                max_articles=10,
-                newsapi_key=config.NEWSAPI_ORG_API_KEY,
-            )
-            saved = 0
-            for art in articles:
-                url = art.get("url", "")
-                if not url: continue
-                existing = db_session.query(ScrapedArticle).filter_by(url=url).first()
-                if existing: continue
-                vader = get_vader_sentiment_score(f"{art.get('headline','')} {art.get('article_text','')}")
-                pub_date = None
-                if art.get("publication_date") and art["publication_date"] != "N/A":
-                    try:
-                        from datetime import datetime
-                        pub_date = datetime.strptime(art["publication_date"][:10], "%Y-%m-%d")
-                    except: pass
-                entry = ScrapedArticle(
-                    url=url, headline=art.get("headline",""),
-                    article_text=art.get("article_text",""),
-                    publication_date=pub_date,
-                    download_date=datetime.now(timezone.utc).replace(tzinfo=None),
-                    source_domain=art.get("source_domain",""),
-                    vader_score=vader,
-                    related_sector=target_name if target_type=="sector" else None,
-                    related_stock=target_name if target_type=="stock" else None,
-                )
-                db_session.add(entry)
-                saved += 1
-            db_session.commit()
-            append_log_local(f"OnDemandFetcher saved {saved} new articles for '{target_name}'", "INFO")
-            return saved
-        except Exception as e:
-            append_log_local(f"OnDemandFetcher error: {e}", "ERROR")
-            return 0
-    # ── FALLBACK: original broken code (kept for reference, never runs) ──
-    append_log_local(f"Starting on-demand Google scrape for {target_type} '{target_name}', Dates: {start_date_obj} to {end_date_obj}", "INFO")
-    saved_count = 0
-    google_start_param = parse_date_for_google_search(start_date_obj)
-    google_end_param = parse_date_for_google_search(end_date_obj)
-    year_str = str(start_date_obj.year)
-
-    search_keywords = []
-    if target_type == "stock": search_keywords = [f"'{target_name}' news {year_str}", f"'{target_name}' results {year_str}"]
-    elif target_type == "sector": search_keywords = [f"'{target_name}' India {year_str}", f"'{target_name}' outlook {year_str}"]
-    else: append_log_local(f"Invalid target_type for scrape: {target_type}", "ERROR"); return 0
-
-    existing_urls = {res[0] for res in db_session.query(ScrapedArticle.url).all()}
-    append_log_local(f"On-demand scrape: {len(existing_urls)} existing URLs in DB.", "DEBUG")
-
-    for keyword in search_keywords:
-        for domain in domains_to_scrape:
-            append_log_local(f"  Google Scraping: '{keyword}' on '{domain}'", "DEBUG")
-            google_tool = None # Ensure it's reset or properly scoped
-            try:
-                google_tool = GoogleSearchNewsURLExtractor(
-                    keyword=keyword, news_domain=domain,
-                    start_date_str=google_start_param, end_date_str=google_end_param,
-                    num_pages=1 # Keep low for on-demand
-                )
-                found_urls = google_tool.fetch_all_urls() # This now manages its own driver
-                append_log_local(f"    Google found {len(found_urls)} URLs for '{keyword}' on {domain}.", "DEBUG")
-
-                for url in found_urls:
-                    if url in existing_urls: continue
-                    append_log_local(f"      Fetching/Parsing: {url}", "DEBUG")
-                    time.sleep(config.APP_SCRAPER_ARTICLE_FETCH_DELAY) # Use app-specific delay
-                    try:
-                        article_obj = Newspaper(url=url) # news.py Newspaper
-                        pub_date_dt = article_obj.date_publish_datetime_utc
-                        if not pub_date_dt or not (start_date_obj <= pub_date_dt.date() <= end_date_obj):
-                            if pub_date_dt: append_log_local(f"        Article date {pub_date_dt.date()} outside range. Skipping.", "INFO")
-                            else: append_log_local(f"        Could not parse date for {url}. Skipping.", "WARNING")
-                            existing_urls.add(url); continue
-                        
-                        if article_obj.article and article_obj.headline:
-                            db_entry = ScrapedArticle(
-                                url=article_obj.url, headline=article_obj.headline,
-                                article_text=article_obj.article, publication_date=pub_date_dt,
-                                download_date=datetime.now(timezone.utc).replace(tzinfo=None),
-                                source_domain=article_obj.source_domain, language=article_obj.language,
-                                authors=json.dumps(article_obj.authors) if article_obj.authors else None,
-                                keywords_extracted=json.dumps(article_obj.keywords) if article_obj.keywords else None,
-                                summary_generated=article_obj.summary,
-                                related_sector=target_name if target_type == "sector" else None,
-                                related_stock=target_name if target_type == "stock" else None
-                            )
-                            db_session.add(db_entry); db_session.commit()
-                            existing_urls.add(url); saved_count += 1
-                            append_log_local(f"        SAVED to DB: {url}", "INFO")
-                        else: existing_urls.add(url)
-                    except Exception as e_art:
-                        append_log_local(f"        Error processing article {url}: {str(e_art)[:100]}", "ERROR")
-                        if db_session.is_active: db_session.rollback()
-                        existing_urls.add(url)
-            except Exception as e_gsearch:
-                append_log_local(f"    Google Search instance error for '{keyword}' on {domain}: {str(e_gsearch)[:100]}", "ERROR")
-                logger.error(f"GoogleSearchNewsURLExtractor error: {e_gsearch}", exc_info=True)
-            # Delay between Google queries (domain/keyword combos)
-            time.sleep(config.APP_SCRAPER_SEARCH_DELAY_GOOGLE)
-            
-    append_log_local(f"On-demand Google scrape finished. Saved {saved_count} new articles.", "INFO")
-    return saved_count
-
+ 
 if __name__ == '__main__':
     logger.info(f"Nifty News Sentiment Analyzer starting...")
     try:
@@ -667,7 +545,8 @@ if __name__ == '__main__':
         logger.info("Database tables checked/created successfully.")
     except Exception as e_db_create:
         logger.error(f"CRITICAL: Failed to create/check database tables on startup: {e_db_create}")
-
+ 
     port = int(os.environ.get("PORT", 5003))
     logger.info(f"Flask app running on http://0.0.0.0:{port}")
     app.run(debug=True, host='0.0.0.0', port=port, use_reloader=True)
+ 
