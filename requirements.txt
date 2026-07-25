@@ -12,19 +12,6 @@ google-generativeai==0.8.5
  
 # News Data Sources
 newsapi-python==0.2.7
-gnews==0.4.3
- 
-# Article Fetching (replaces broken newsfetch_lib)
-httpx==0.28.1
-newspaper4k==0.9.5
-lxml==5.4.0
-lxml-html-clean==0.4.4
-beautifulsoup4==4.12.3
- 
-# On-Demand Scraping (JS-heavy sites fallback)
-playwright==1.60.0
-scrapy==2.16.0
-scrapy-playwright==0.0.46
  
 # Stock Price Data
 yfinance==0.2.63
@@ -33,7 +20,3 @@ yfinance==0.2.63
 pandas==2.3.0
 numpy==2.3.1
  
-# Utilities
-requests==2.32.3
-fake-useragent==2.2.0
-tqdm==4.67.1

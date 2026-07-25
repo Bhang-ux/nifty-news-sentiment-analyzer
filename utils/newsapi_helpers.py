@@ -4,9 +4,9 @@ from newsapi import NewsApiClient
 import time
 # from datetime import timedelta # Not directly used here but often useful with dates
 from .sentiment_analyzer import get_vader_sentiment_score 
-
+ 
 logger = logging.getLogger(__name__) # Ensures it uses the app's logger config
-
+ 
 def get_newsapi_org_client(api_key, append_log_func=None):
     log_msg_prefix = "[NewsAPIClient]"
     # Use a consistent local logger function name
@@ -16,7 +16,7 @@ def get_newsapi_org_client(api_key, append_log_func=None):
         elif level.lower() == 'warning': logger.warning(full_message)
         else: logger.info(full_message)
         if append_log_func: append_log_func(message, level.upper())
-
+ 
     # Added more common placeholder variations
     if not api_key or api_key in ["YOUR_NEWSAPI_ORG_API_KEY_HERE", "YOUR_NEWSAPI_KEY_HERE", ""]:
         msg = "NewsAPI.org key is missing or a placeholder. Client not initialized."
@@ -30,7 +30,7 @@ def get_newsapi_org_client(api_key, append_log_func=None):
         err_msg = f"Failed to initialize NewsAPI.org client: {e}"
         _log_relay(err_msg, 'error')
         return None, str(e)
-
+ 
 def _process_newsapi_response(
     response_articles,
     max_articles_to_return,
@@ -43,7 +43,7 @@ def _process_newsapi_response(
     if not response_articles: # Handle empty list early
         if log_func: log_func("No articles received from NewsAPI to process.", "DEBUG")
         return articles_data
-
+ 
     for article_idx, article in enumerate(response_articles):
         if len(articles_data) >= max_articles_to_return:
             if log_func: log_func(f"Reached max_articles_to_return limit ({max_articles_to_return}). Stopping processing NewsAPI articles.", "INFO")
@@ -56,7 +56,7 @@ def _process_newsapi_response(
             elif log_func and not url: log_func(f"Skipping NewsAPI article {article_idx+1} (no URL).", "DEBUG")
             continue
         unique_urls.add(url)
-
+ 
         title = article.get('title', "") or ""
         description = article.get('description', "") or ""
         # NewsAPI 'content' is often truncated and ends with "[+XXXX chars]"
@@ -74,7 +74,7 @@ def _process_newsapi_response(
             # Sometimes the content is just the description or title again, or very short
             if len(content_cleaned) < 50 or content_cleaned == description or content_cleaned == title:
                 content_cleaned = "" # Discard if not significantly different or too short
-
+ 
         if content_cleaned: # If cleaned 'content' is good
             text_for_analysis += (". " if title and not title.endswith(('.', '!', '?')) else " ") + content_cleaned
         elif description: # Fallback to description
@@ -95,11 +95,11 @@ def _process_newsapi_response(
                 'description': description # Keep original description
             })
         elif log_func:
-            log_func(f"Skipping NewsAPI article {url_idx+1} (no usable text after processing). URL: {url}, Title: '{title[:50]}...'", "DEBUG")
-
+            log_func(f"Skipping NewsAPI article {article_idx+1} (no usable text after processing). URL: {url}, Title: '{title[:50]}...'", "DEBUG")
+ 
     return articles_data
-
-
+ 
+ 
 def fetch_newsapi_articles( # Generic fetcher for both sector and stock from NewsAPI
     newsapi_client,
     target_name_for_log, # For logging context e.g., "Nifty IT" or "TCS"
@@ -117,12 +117,12 @@ def fetch_newsapi_articles( # Generic fetcher for both sector and stock from New
         elif level.lower() == 'warning': logger.warning(full_message)
         else: logger.info(full_message)
         if append_log_func: append_log_func(message, level.upper())
-
+ 
     if not newsapi_client:
         msg = "NewsAPI client not available for fetching."
         _local_log_relay(msg, 'warning')
         return [], msg
-
+ 
     # Ensure keywords are properly quoted for exact phrases or ORed
     # Example: (("Infosys" OR "Infosys results") AND ("India" OR "NSE"))
     main_query_parts = [f'"{k.strip()}"' for k in query_keywords_list if k and k.strip()]
@@ -131,8 +131,8 @@ def fetch_newsapi_articles( # Generic fetcher for both sector and stock from New
         return [], "No valid main keywords provided for NewsAPI query."
     # Join with OR, then wrap the whole thing in parentheses if multiple parts
     main_query_formatted = f"({' OR '.join(main_query_parts)})" if len(main_query_parts) > 1 else main_query_parts[0]
-
-
+ 
+ 
     context_query_parts = [f'"{k.strip()}"' for k in context_keywords_list if k and k.strip()]
     context_query_formatted = f"({' OR '.join(context_query_parts)})" if len(context_query_parts) > 1 else (context_query_parts[0] if context_query_parts else "")
     
@@ -149,9 +149,9 @@ def fetch_newsapi_articles( # Generic fetcher for both sector and stock from New
     # We might fetch more than max_articles_to_fetch initially to account for filtering later.
     # Let's aim to fetch slightly more if max_articles_to_fetch is small, but cap at API limits.
     page_size_for_api = min(max(max_articles_to_fetch * 2, 20), 100) 
-
+ 
     _local_log_relay(f"Fetching NewsAPI. Query: '{query_string}', Dates: {from_date_str} to {to_date_str}, Target PageSize: {page_size_for_api}", "DEBUG")
-
+ 
     try:
         all_articles_response = newsapi_client.get_everything(
             q=query_string,
@@ -161,7 +161,7 @@ def fetch_newsapi_articles( # Generic fetcher for both sector and stock from New
             sort_by='relevancy', # 'publishedAt' for freshest, 'relevancy' might be better for specific targets
             page_size=page_size_for_api # Ask for up to this many
         )
-
+ 
         if all_articles_response['status'] == 'ok':
             fetched_api_articles = all_articles_response['articles']
             _local_log_relay(f"NewsAPI returned {all_articles_response['totalResults']} total results, received {len(fetched_api_articles)} articles in this API call.", "INFO")
@@ -187,7 +187,7 @@ def fetch_newsapi_articles( # Generic fetcher for both sector and stock from New
                 _local_log_relay(f"Query date range ({from_date_str} to {to_date_str}) might be too old for NewsAPI free/developer tier.", 'warning')
                 error_message_user = f"NewsAPI: Date range may be too old ({from_date_str} to {to_date_str}). Max is usually ~30 days back for free/dev tier."
             # Add other specific error code handling if needed
-
+ 
     except Exception as e:
         err_msg = f"An unexpected exception occurred during NewsAPI fetch: {str(e)}" # Log more of the error
         _local_log_relay(err_msg, 'error')
@@ -196,14 +196,7 @@ def fetch_newsapi_articles( # Generic fetcher for both sector and stock from New
     
     time.sleep(1.2) # API politeness - consider making this configurable
     return articles_data, error_message_user
-
-# Keep your original fetch_sector_news_newsapi and fetch_stock_news_newsapi
-# if they are substantially different or called from other places (like batch analysis).
-# The new `fetch_newsapi_articles` is designed to be more generic for the adhoc route.
-# If fetch_sector_news_newsapi and fetch_stock_news_newsapi are just wrappers around
-# the same core logic, you could refactor them to use fetch_newsapi_articles.
-
-# For example, if your app.py's batch sector analysis needs `fetch_sector_news_newsapi`:
+ 
 def fetch_sector_news_newsapi( # Kept for compatibility if called from old routes
     newsapi_client,
     sector_name, 
@@ -225,7 +218,7 @@ def fetch_sector_news_newsapi( # Kept for compatibility if called from old route
         max_articles_to_fetch=max_articles_to_fetch,
         append_log_func=append_log_func
     )
-
+ 
 def fetch_stock_news_newsapi( # Kept for compatibility if called from old routes
     newsapi_client,
     stock_name, 
