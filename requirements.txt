@@ -19,4 +19,14 @@ yfinance==0.2.63
 # Data Processing
 pandas==2.3.0
 numpy==2.3.1
- 
+
+# Web Scraping through Gnews
+unidecode
+gnews==0.4.3
+beautifulsoup4
+fake-useragent
+newspaper4k
+news-please
+selenium
+undetected-chromedriver
+requests

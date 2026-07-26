@@ -546,7 +546,20 @@ if __name__ == '__main__':
     except Exception as e_db_create:
         logger.error(f"CRITICAL: Failed to create/check database tables on startup: {e_db_create}")
  
+    # Trigger the background ingestion cycle (fills the DB across all stocks/sectors)
+    # on startup -- but ONLY from the actual worker process, not Werkzeug's
+    # reloader-monitor process. debug=True + use_reloader=True means this whole
+    # __main__ block re-executes on every code reload during development; without
+    # this WERKZEUG_RUN_MAIN check, ingestion would restart redundantly on every
+    # single file save while developing. maybe_run_ingestion_on_startup() is also
+    # itself safe to call repeatedly -- it no-ops if today's cycle already finished.
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+        try:
+            import daily_ingestion
+            daily_ingestion.maybe_run_ingestion_on_startup()
+        except Exception as e_ingestion:
+            logger.error(f"Could not start background ingestion on startup: {e_ingestion}")
+ 
     port = int(os.environ.get("PORT", 5003))
     logger.info(f"Flask app running on http://0.0.0.0:{port}")
     app.run(debug=True, host='0.0.0.0', port=port, use_reloader=True)
- 
