@@ -1,0 +1,50 @@
+SELECT related_stock, COUNT(*) AS n
+FROM scraped_articles
+WHERE related_stock IS NOT NULL
+GROUP BY related_stock
+ORDER BY n DESC; #count per related_stock
+
+
+SELECT related_stock,
+       COUNT(*) AS n,
+       MIN(publication_date) AS oldest,
+       MAX(publication_date) AS newest
+FROM scraped_articles
+WHERE related_stock IS NOT NULL
+GROUP BY related_stock
+ORDER BY n DESC;  #How oldest
+
+
+SELECT related_stock,
+       COUNT(*) AS n,
+       MIN(COALESCE(publication_date, download_date)) AS oldest,
+       MAX(COALESCE(publication_date, download_date)) AS newest
+FROM scraped_articles
+WHERE related_stock IS NOT NULL
+GROUP BY related_stock
+ORDER BY n DESC;    #NULL Trap
+
+
+SELECT related_stock,
+       COUNT(*) AS n,
+       MAX(COALESCE(publication_date, download_date)) AS newest
+FROM scraped_articles
+WHERE related_stock IS NOT NULL
+GROUP BY related_stock
+HAVING newest < datetime('now', '-30 day')
+ORDER BY newest ASC; #Nothing newer than 30
+
+SELECT 
+    id, 
+    url, 
+    headline, 
+    source,
+    related_stock,
+    LENGTH(article_text) AS char_length,
+    LENGTH(article_text) - LENGTH(REPLACE(article_text, ' ', '')) + 1 AS approx_word_count,
+    SUBSTR(article_text, 1, 300) AS text_preview
+FROM scraped_articles
+ORDER BY char_length DESC
+LIMIT 20; #For top 20 length articles
+
+python ingestion.py --drip-only --minimum 50 --max-stocks 252 --loop 20

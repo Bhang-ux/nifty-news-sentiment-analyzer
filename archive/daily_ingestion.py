@@ -293,6 +293,17 @@ def run_ingestion_cycle():
     create_db_and_tables()
     db = SessionLocal()
     state = load_state()
+    try:
+        from rss_ingestion import run_rss_ingestion
+        logger.info("RSS ingestion (primary tier) starting...")
+        run_rss_ingestion()
+    except Exception as e:
+        logger.error(f"RSS ingestion failed, continuing with NewsAPI/GNews: {e}")
+    try:
+        from backfill_ingestion import run_coverage_backfill
+        run_coverage_backfill()
+    except Exception as e:
+        logger.error(f"Coverage backfill failed: {e}")
  
     newsapi_client, client_err = newsapi_helpers.get_newsapi_org_client(
         config.NEWSAPI_ORG_API_KEY, append_log_func=lambda m, l='info': logger.info(m)
