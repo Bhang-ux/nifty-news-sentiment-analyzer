@@ -30,3 +30,5 @@ news-please
 selenium
 undetected-chromedriver
 requests
+
+sentence-transformers

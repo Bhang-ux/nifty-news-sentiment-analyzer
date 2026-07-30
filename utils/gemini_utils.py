@@ -1,5 +1,5 @@
 # utils/gemini_utils.py
-import google.generativeai as genai
+from google import genai
 import json
 import logging
 
@@ -599,7 +599,7 @@ def analyze_news_with_gemini(
         return None, err_msg
 
     try:
-        genai.configure(api_key=_api_key)
+        client = genai.Client(api_key=key)
     except Exception as e:
         err_msg = f"Failed to configure Gemini API: {str(e)[:150]}"
         _log(err_msg, 'error')
@@ -668,11 +668,13 @@ def analyze_news_with_gemini(
     Ensure the output is ONLY the JSON object, without any preceding or succeeding text, and no markdown formatting for the JSON block itself.
     """
     try:
-        model_name = 'gemini-2.5-pro'
+        model_name = 'gemini-2.5-flash'
         _log(f"Using Gemini model: {model_name} for '{analysis_target_name}'", 'info')
-        model = genai.GenerativeModel(model_name)
-        generation_config = genai.types.GenerationConfig(temperature=0.3)
-        response = model.generate_content(prompt, generation_config=generation_config)
+        response = client.models.generate_content(
+            model='gemini-2.5-pro',
+            contents=prompt,
+            config=genai.types.GenerateContentConfig(temperature=0.2)
+        )
         
         cleaned_response_text = ""
         if hasattr(response, 'text') and response.text: cleaned_response_text = response.text.strip()
