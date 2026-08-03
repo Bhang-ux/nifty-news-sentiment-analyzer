@@ -26,6 +26,12 @@ document.addEventListener('DOMContentLoaded', function () {
     const commonDateInputsDiv = document.getElementById('common_date_inputs');
     const commonLlmParamsDiv = document.getElementById('common_llm_params_div');
 
+    // --- RAG Q&A elements ---
+    const ragQuestionInput = document.getElementById('rag-question');
+    const askRagBtn = document.getElementById('askRagBtn');
+    const ragAnswerDiv = document.getElementById('rag-answer');
+    const ragSourcesDiv = document.getElementById('rag-sources');
+
     let SECTOR_STOCK_CONFIG = {};
     // ... (SECTOR_STOCK_CONFIG parsing - keep as before) ...
     try {
@@ -565,6 +571,55 @@ document.addEventListener('DOMContentLoaded', function () {
             return html;
         }).join('');
         containerElement.innerHTML = `<div class="stock-list-container">${stockListHtml}</div>`;
+    }
+
+    // --- RAG Q&A ---
+    async function askRAG() {
+        if (!ragQuestionInput) return;
+        const question = ragQuestionInput.value.trim();
+        if (!question) return;
+
+        askRagBtn.disabled = true;
+        ragAnswerDiv.innerText = 'Thinking...';
+        ragSourcesDiv.innerText = '';
+        const ts = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+        appendToLog({ timestamp: ts, message: `RAG question: "${question}"`, level: "INFO" });
+
+        try {
+            const response = await fetch('/api/ask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question: question })
+            });
+            const data = await response.json();
+
+            if (!response.ok || data.error) {
+                ragAnswerDiv.innerText = data.message || `Server error: ${response.status}`;
+                appendToLog({ timestamp: ts, message: `RAG error: ${data.message || response.status}`, level: "ERROR" });
+                return;
+            }
+
+            ragAnswerDiv.innerText = data.answer || 'No answer returned.';
+
+            if (data.sources && data.sources.length > 0) {
+                ragSourcesDiv.innerText =
+                    'Sources:\n' + data.sources.map((s, i) =>
+                        `[${i + 1}] ${s.headline} (${s.stock || 'N/A'} | ${s.date || 'N/A'})`
+                    ).join('\n');
+            }
+        } catch (error) {
+            ragAnswerDiv.innerText = 'Client error asking question.';
+            appendToLog({ timestamp: ts, message: `Client error (RAG ask): ${error}`, level: "ERROR" });
+        } finally {
+            askRagBtn.disabled = false;
+        }
+    }
+
+    if (askRagBtn) askRagBtn.addEventListener('click', askRAG);
+    if (ragQuestionInput) {
+        ragQuestionInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') { event.preventDefault(); askRAG(); }
+        });
     }
 
     // Initial UI Setup

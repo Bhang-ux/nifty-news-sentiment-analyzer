@@ -35,6 +35,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("nltk").setLevel(logging.INFO)
 logging.getLogger("yfinance").setLevel(logging.WARNING) # yfinance can be verbose
 logging.getLogger("fake_useragent").setLevel(logging.WARNING)
+logging.getLogger("trafilatura").setLevel(logging.WARNING)
 
 
 # --- Database ---
@@ -576,7 +577,20 @@ def get_yfinance_prices(ticker, start_date_str, end_date_str, append_log_local):
         append_log_local(f"General error yfinance for {ticker_yf}: {e}", "ERROR")
         logger.error(f"Full yfinance error {ticker_yf}:", exc_info=True)
         return []
-
+@app.route('/api/ask', methods=['POST'])
+def ask_route():
+    data = request.json
+    question = data.get('question', '').strip()
+    if not question:
+        return jsonify({'error': True, 'message': 'Question required'}), 400
+    import rag
+    result = rag.answer(
+        question,
+        stock=data.get('stock'),
+        sector=data.get('sector'),
+        days=data.get('days')
+    )
+    return jsonify({'error': False, **result})
 if __name__ == '__main__':
     logger.info(f"Nifty News Sentiment Analyzer starting...")
     try:
@@ -602,4 +616,5 @@ if __name__ == '__main__':
 
     port = int(os.environ.get("PORT", 5003))
     logger.info(f"Flask app running on http://0.0.0.0:{port}")
-    app.run(debug=True, host='0.0.0.0', port=port, use_reloader=True)
+    app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)
+

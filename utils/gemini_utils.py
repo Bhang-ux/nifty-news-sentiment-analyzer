@@ -668,10 +668,10 @@ def analyze_news_with_gemini(
     Ensure the output is ONLY the JSON object, without any preceding or succeeding text, and no markdown formatting for the JSON block itself.
     """
     try:
-        model_name = 'gemini-2.5-flash'
+        model_name = 'gemini-3.5-flash'
         _log(f"Using Gemini model: {model_name} for '{analysis_target_name}'", 'info')
         response = client.models.generate_content(
-            model='gemini-2.5-pro',
+            model='gemini-3.5-flash',
             contents=prompt,
             config=genai.types.GenerateContentConfig(temperature=0.2)
         )

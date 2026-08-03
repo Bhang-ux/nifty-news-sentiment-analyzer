@@ -57,7 +57,7 @@ EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 # on the documents/chunks being embedded -- asymmetric on purpose.
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
-GEMINI_MODEL_NAME = "gemini-2.5-pro"  # same model gemini_utils.py already uses
+GEMINI_MODEL_NAME = "gemini-3.5-flash"  # same model gemini_utils.py already uses
 RECENCY_WEIGHT = 0.15  # small nudge, not a dominant factor -- semantic score still leads
 RECENCY_HALFLIFE_DAYS = 30
 
@@ -340,7 +340,7 @@ def answer(question: str, stock: str | None = None, sector: str | None = None,
     from google import genai
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-3.5-flash',
         contents=prompt,
         config=genai.types.GenerateContentConfig(temperature=0.2)
     )

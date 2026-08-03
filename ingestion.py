@@ -2,42 +2,42 @@
 """
 THE ingestion module -- replaces daily_ingestion.py, rss_ingestion.py,
 backfill_ingestion.py and gnews_search_backfill.py with one file.
-
+ 
 Design (three tiers, each doing what it's good at):
-
+ 
   TIER A -- RSS (daily, free, unlimited):
       14 publisher feeds (ET, Moneycontrol, LiveMint, BusinessLine).
       Direct URLs -> trafilatura full text -> word-boundary matching against
       all 22 sectors + 252 stocks. Captures the fresh daily news flow.
-
+ 
   TIER B -- Google News search drip (daily, free, rate-limited):
       For every stock with fewer than MIN_RECENT_ARTICLES articles from the
       last FRESH_WINDOW_DAYS days, searches Google News per stock (keyless,
       unlimited discovery), decodes the encrypted links slowly with backoff,
       extracts full text. Keeps EVERY stock topped up with recent coverage,
       worst-covered first.
-
+ 
   TIER C -- NewsAPI (ON-DEMAND ONLY, never scheduled):
       The 90/day budget is reserved for ensure_stock_coverage() /
       ensure_sector_coverage(), called from Flask when a user requests a
       stock/sector and the DB lacks enough recent articles. Full text is
       fetched from the article URLs (NewsAPI's own content is truncated).
-
+ 
   All tiers save through ONE function (save_article_if_new): dedupe by URL,
   multi-sector tagging via ArticleSector, VADER at ingest, source column
   ('rss:<publisher>' / 'gnews-search' / 'newsapi').
-
+ 
   Retrieval for sentiment/RAG: get_recent(stock=..., sector=..., days=N)
   returns articles published after the cutoff, NEWEST FIRST. Articles with
   no parsed publication date fall back to download_date so they're never
   silently lost.
-
+ 
 Concurrency note: safe to run from the terminal WHILE Flask is running.
 The DB uses WAL mode + check_same_thread=False (set in database_models.py),
 so one writer (this script) and many readers (Flask) coexist fine. Avoid
 running TWO bulk fills at the same time, though -- they'd fight over
 Google's rate limit and duplicate effort.
-
+ 
 Entry points:
   python ingestion.py                     # daily run: RSS + drip (once/day guard)
   python ingestion.py --force             # daily run, ignore the once/day guard
@@ -45,20 +45,20 @@ Entry points:
   python ingestion.py --check-feeds
   python ingestion.py --ensure-sector "Nifty Bank"
   python ingestion.py --ensure-stock "Infosys"
-
+ 
   BULK FILL (e.g. overnight, works alongside running Flask):
   python ingestion.py --drip-only --minimum 50 --max-stocks 252 --loop 20
       -> repeat forever: push every stock toward 50 recent articles,
          rest 20 minutes between passes, Ctrl+C to stop (progress is
          saved continuously, stopping loses nothing)
-
+ 
   From Flask:  ingestion.maybe_run_daily_on_startup()   (background thread)
-
+ 
 Dependencies: pip install feedparser trafilatura requests googlenewsdecoder
 """
-
+ 
 from __future__ import annotations
-
+ 
 import os
 import sys
 import re
@@ -70,26 +70,26 @@ import threading
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urlparse
-
+ 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
-
+ 
 import requests
 import feedparser
 import trafilatura
 from sqlalchemy import func, or_, and_
-
+ 
 import config
 from utils.database_models import (SessionLocal, create_db_and_tables,
                                    ScrapedArticle, ArticleSector)
 from utils import gemini_utils, newsapi_helpers, sentiment_analyzer, db_crud
-
+ 
 try:
     from googlenewsdecoder import gnewsdecoder
     DECODER_AVAILABLE = True
 except ImportError:
     DECODER_AVAILABLE = False
-
+ 
 # ─── Logging ────────────────────────────────────────────────────────────────
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -100,29 +100,29 @@ logging.basicConfig(
               logging.FileHandler(os.path.join(PROJECT_ROOT, "ingestion.log"),
                                   encoding="utf-8")])
 logger = logging.getLogger("ingestion")
-
+ 
 # ─── Tunables ───────────────────────────────────────────────────────────────
 STATE_FILE = os.path.join(PROJECT_ROOT, "ingestion_state.json")
 DAILY_NEWSAPI_BUDGET = 90
-
+ 
 FRESH_WINDOW_DAYS = 30        # "recent" = published within this many days
 MIN_RECENT_ARTICLES = 5       # every stock should have at least this many recent
 DRIP_MAX_STOCKS_PER_RUN = 40  # gap stocks worked per daily drip run
 DECODE_DELAY = 3.0            # seconds between Google decode calls
 MAX_DECODE_ATTEMPTS_PER_STOCK = 12
 MAX_CONSECUTIVE_DECODE_FAILS = 8
-
+ 
 ON_DEMAND_BUDGET_CAP = 10     # max NewsAPI calls per ensure_* trigger
 ON_DEMAND_MIN_SECTOR = 10     # sector considered "thin" below this many recent
 ON_DEMAND_DAYS = 7            # ...within this window
 NEWSAPI_LOOKBACK_DAYS = 28    # free tier can't search further back
-
+ 
 MIN_ARTICLE_CHARS = 400
 REQUEST_TIMEOUT = 15
 POLITE_DELAY = 1.0
 USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
-
+ 
 FEEDS: dict[str, list[str]] = {
     "economictimes": [
         "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
@@ -147,12 +147,12 @@ FEEDS: dict[str, list[str]] = {
         "https://www.thehindubusinessline.com/companies/feeder/default.rss",
     ],
 }
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # State (same file/keys as before -- no migration needed)
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
         try:
@@ -162,28 +162,28 @@ def load_state() -> dict:
             logger.warning(f"State file unreadable, starting fresh: {e}")
     return {"last_fetched": {}, "daily_counter": {"date": "", "count": 0},
             "last_full_cycle_date": ""}
-
-
+ 
+ 
 def save_state(state: dict) -> None:
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
-
-
+ 
+ 
 def get_remaining_budget(state: dict) -> int:
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if state["daily_counter"]["date"] != today:
         state["daily_counter"] = {"date": today, "count": 0}
     return DAILY_NEWSAPI_BUDGET - state["daily_counter"]["count"]
-
-
+ 
+ 
 def record_newsapi_call(state: dict) -> None:
     state["daily_counter"]["count"] += 1
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # Targets and matching
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def build_unique_targets():
     """sectors: [name]; stocks: {name: {'sectors': [...], 'keywords': [...]}}"""
     cfg = gemini_utils.NIFTY_SECTORS_QUERY_CONFIG
@@ -194,8 +194,8 @@ def build_unique_targets():
             stocks.setdefault(stock_name, {"sectors": [], "keywords": keywords})
             stocks[stock_name]["sectors"].append(sector_name)
     return sectors, stocks
-
-
+ 
+ 
 def build_alias_index():
     """[(compiled_pattern, canonical, is_sector, sectors_of_target)], longest
     aliases first. Word-boundary so 'TCS' can't match inside another word."""
@@ -213,8 +213,8 @@ def build_alias_index():
     raw.sort(key=lambda r: len(r[0]), reverse=True)
     return [(re.compile(r"(?<!\w)" + re.escape(a) + r"(?!\w)", re.IGNORECASE),
              canon, is_sec, secs) for a, canon, is_sec, secs in raw]
-
-
+ 
+ 
 def match_text(title: str, body: str, alias_index) -> tuple[str | None, list[str]]:
     """Returns (related_stock, all_sector_names) for a piece of text."""
     haystack = f"{title} {body[:1500]}"
@@ -235,12 +235,12 @@ def match_text(title: str, body: str, alias_index) -> tuple[str | None, list[str
                 if s not in sector_names:
                     sector_names.append(s)
     return related_stock, sector_names
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # The ONE save path (unchanged semantics from daily_ingestion)
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def save_article_if_new(db, url, headline, article_text, pub_date, source_domain,
                         vader_score, related_stock, sector_names, source) -> bool:
     if db.query(ScrapedArticle).filter_by(url=url).first():
@@ -263,8 +263,8 @@ def save_article_if_new(db, url, headline, article_text, pub_date, source_domain
     if sector_names:
         db_crud.tag_article_sectors(db, entry.id, sector_names)
     return True
-
-
+ 
+ 
 def _extract(url: str) -> str:
     try:
         downloaded = trafilatura.fetch_url(url)
@@ -276,29 +276,29 @@ def _extract(url: str) -> str:
     except Exception as e:
         logger.debug(f"Extraction error {url}: {e}")
         return ""
-
-
+ 
+ 
 def _vader(headline: str, text: str) -> float:
     return sentiment_analyzer.get_vader_sentiment_score(
         f"{headline} {text[:3000]}")
-
-
+ 
+ 
 def _naive_utc(dt: datetime | None) -> datetime | None:
     if dt is not None and dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # Coverage measurement (freshness-aware, NULL-date safe)
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def _effective_date():
     """publication_date, falling back to download_date when NULL."""
     return func.coalesce(ScrapedArticle.publication_date,
                          ScrapedArticle.download_date)
-
-
+ 
+ 
 def stocks_below_recent_minimum(db, minimum=MIN_RECENT_ARTICLES,
                                 days=FRESH_WINDOW_DAYS) -> list[tuple[str, int]]:
     """[(stock, recent_count)] for stocks under the freshness floor, worst first."""
@@ -313,20 +313,20 @@ def stocks_below_recent_minimum(db, minimum=MIN_RECENT_ARTICLES,
                if counts.get(name, 0) < minimum]
     lacking.sort(key=lambda x: x[1])
     return lacking
-
-
+ 
+ 
 def recent_sector_count(db, sector_name, days) -> int:
     cutoff = datetime.utcnow() - timedelta(days=days)
     return (db.query(func.count(ScrapedArticle.id))
               .join(ArticleSector, ArticleSector.article_id == ScrapedArticle.id)
               .filter(ArticleSector.sector_name == sector_name,
                       _effective_date() >= cutoff).scalar()) or 0
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # TIER A: RSS
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def _fetch_feed(url: str) -> list[dict]:
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT,
@@ -340,8 +340,8 @@ def _fetch_feed(url: str) -> list[dict]:
     except Exception as e:
         logger.warning(f"Feed fetch failed: {url} ({e})")
         return []
-
-
+ 
+ 
 def run_rss(db, alias_index, limit: int | None = None) -> dict:
     stats = {"entries": 0, "saved": 0, "dup": 0, "empty": 0, "no_target": 0}
     seen: set[str] = set()
@@ -362,19 +362,19 @@ def run_rss(db, alias_index, limit: int | None = None) -> dict:
                     logger.info(f"RSS limit {limit} reached")
                     logger.info(f"RSS done: {stats}")
                     return stats
-
+ 
                 text = _extract(url)
                 extracted += 1
                 time.sleep(POLITE_DELAY)
                 if len(text) < MIN_ARTICLE_CHARS:
                     stats["empty"] += 1
                     continue
-
+ 
                 related_stock, sector_names = match_text(title, text, alias_index)
                 if related_stock is None and not sector_names:
                     stats["no_target"] += 1
                     continue
-
+ 
                 pub = None
                 raw = entry.get("published") or entry.get("updated")
                 if raw:
@@ -382,7 +382,7 @@ def run_rss(db, alias_index, limit: int | None = None) -> dict:
                         pub = _naive_utc(parsedate_to_datetime(raw))
                     except (ValueError, TypeError):
                         pass
-
+ 
                 if save_article_if_new(
                         db, url=url, headline=title, article_text=text,
                         pub_date=pub, source_domain=urlparse(url).netloc,
@@ -393,20 +393,20 @@ def run_rss(db, alias_index, limit: int | None = None) -> dict:
                     logger.info(f"RSS saved [{publisher}] '{title[:70]}'")
     logger.info(f"RSS done: {stats}")
     return stats
-
-
+ 
+ 
 def check_feeds() -> None:
     for publisher, feed_urls in FEEDS.items():
         for url in feed_urls:
             entries = _fetch_feed(url)
             status = f"OK ({len(entries)})" if entries else "DEAD"
             print(f"[{status:>10}] {publisher:<15} {url}")
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # TIER B: Google News search drip (freshness maintainer)
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def _decode(redirect_url: str) -> str | None:
     try:
         result = gnewsdecoder(redirect_url, interval=1)
@@ -415,8 +415,8 @@ def _decode(redirect_url: str) -> str | None:
         return None
     except Exception:
         return None
-
-
+ 
+ 
 def _drip_one_stock(db, stock_name, sectors_of_stock, need,
                     fail_streak: list) -> int:
     url = ("https://news.google.com/rss/search?q=" + quote(f'"{stock_name}"')
@@ -430,7 +430,7 @@ def _drip_one_stock(db, stock_name, sectors_of_stock, need,
         logger.warning(f"Drip search failed '{stock_name}': {e}")
         fail_streak[0] += 1          # search failures count too --
         return 0                     # 8 in a row = Google blocking, stop the pass
-
+ 
     saved = attempts = 0
     for entry in entries:
         if saved >= need or attempts >= MAX_DECODE_ATTEMPTS_PER_STOCK \
@@ -440,7 +440,7 @@ def _drip_one_stock(db, stock_name, sectors_of_stock, need,
         link = (entry.get("link") or "").strip()
         if not title or not link:
             continue
-
+ 
         attempts += 1
         real_url = _decode(link)
         time.sleep(DECODE_DELAY)
@@ -453,13 +453,13 @@ def _drip_one_stock(db, stock_name, sectors_of_stock, need,
                 time.sleep(pause)
             continue
         fail_streak[0] = 0
-
+ 
         if db.query(ScrapedArticle).filter_by(url=real_url).first():
             continue
         text = _extract(real_url)
         if len(text) < MIN_ARTICLE_CHARS:
             continue
-
+ 
         pub = None
         raw = entry.get("published")
         if raw:
@@ -467,7 +467,7 @@ def _drip_one_stock(db, stock_name, sectors_of_stock, need,
                 pub = _naive_utc(parsedate_to_datetime(raw))
             except (ValueError, TypeError):
                 pass
-
+ 
         if save_article_if_new(
                 db, url=real_url, headline=title, article_text=text,
                 pub_date=pub, source_domain=urlparse(real_url).netloc,
@@ -477,8 +477,8 @@ def _drip_one_stock(db, stock_name, sectors_of_stock, need,
             saved += 1
             logger.info(f"Drip saved [{stock_name}] '{title[:70]}'")
     return saved
-
-
+ 
+ 
 def run_drip(db, max_stocks=DRIP_MAX_STOCKS_PER_RUN,
              minimum=MIN_RECENT_ARTICLES, days=FRESH_WINDOW_DAYS) -> dict:
     stats = {"stocks": 0, "saved": 0, "stopped_early": False}
@@ -503,12 +503,12 @@ def run_drip(db, max_stocks=DRIP_MAX_STOCKS_PER_RUN,
         stats["saved"] += got
     logger.info(f"Drip done: {stats}")
     return stats
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # TIER C: NewsAPI -- ON-DEMAND ONLY
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def _newsapi_fetch_stock(db, state, stock_name, stock_info) -> int:
     """One budgeted NewsAPI call for one stock, full-text upgraded. Saves."""
     client, err = newsapi_helpers.get_newsapi_org_client(
@@ -518,7 +518,7 @@ def _newsapi_fetch_stock(db, state, stock_name, stock_info) -> int:
         return 0
     record_newsapi_call(state)
     save_state(state)
-
+ 
     to_d = datetime.now(timezone.utc).date()
     from_d = to_d - timedelta(days=NEWSAPI_LOOKBACK_DAYS)
     articles, err = newsapi_helpers.fetch_newsapi_articles(
@@ -532,7 +532,7 @@ def _newsapi_fetch_stock(db, state, stock_name, stock_info) -> int:
     if err:
         logger.warning(f"NewsAPI error '{stock_name}': {err}")
         return 0
-
+ 
     saved = 0
     for art in articles:
         url = art.get('uri')
@@ -558,8 +558,8 @@ def _newsapi_fetch_stock(db, state, stock_name, stock_info) -> int:
             saved += 1
     logger.info(f"NewsAPI on-demand '{stock_name}': {saved} saved")
     return saved
-
-
+ 
+ 
 def ensure_stock_coverage(stock_name, days=ON_DEMAND_DAYS,
                           min_articles=MIN_RECENT_ARTICLES) -> dict:
     """Call from Flask when a stock is requested. Instant no-op if coverage OK."""
@@ -591,8 +591,8 @@ def ensure_stock_coverage(stock_name, days=ON_DEMAND_DAYS,
         save_state(state)
         db.close()
         logger.info(f"ensure_stock_coverage: {result}")
-
-
+ 
+ 
 def ensure_sector_coverage(sector_name, days=ON_DEMAND_DAYS,
                            min_articles=ON_DEMAND_MIN_SECTOR,
                            budget_cap=ON_DEMAND_BUDGET_CAP) -> dict:
@@ -632,12 +632,12 @@ def ensure_sector_coverage(sector_name, days=ON_DEMAND_DAYS,
         save_state(state)
         db.close()
         logger.info(f"ensure_sector_coverage: {result}")
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # Retrieval for sentiment / RAG
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def get_recent(stock: str | None = None, sector: str | None = None,
                days: int = 1, limit: int = 200):
     """Articles published (or, if no parsed date, downloaded) within the last
@@ -655,12 +655,12 @@ def get_recent(stock: str | None = None, sector: str | None = None,
         return q.order_by(_effective_date().desc()).limit(limit).all()
     finally:
         db.close()
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # Daily cycle, bulk fill loop, Flask startup trigger
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def run_daily(force=False, rss_only=False, drip_only=False,
               minimum=MIN_RECENT_ARTICLES,
               max_stocks=DRIP_MAX_STOCKS_PER_RUN) -> None:
@@ -688,9 +688,21 @@ def run_daily(force=False, rss_only=False, drip_only=False,
                     f"by source: {stats['by_source']}")
     finally:
         db.close()
+        # Embed whatever un-chunked articles exist right now -- runs even if
+        # RSS/drip above raised partway through, and doesn't depend on the
+        # cycle having "finished" cleanly. embed_new_articles() only looks
+        # for articles with zero rows in article_chunks, so running this
+        # every time costs nothing extra when there's nothing new -- it just
+        # no-ops fast.
+        try:
+            import rag
+            rag.embed_new_articles()
+        except Exception as e:
+            logger.error(f"RAG embedding step failed: {e}")
+
     logger.info("=" * 60)
-
-
+ 
+ 
 def run_loop(rest_minutes: int, rss_only=False, drip_only=False,
              minimum=MIN_RECENT_ARTICLES,
              max_stocks=DRIP_MAX_STOCKS_PER_RUN) -> None:
@@ -720,8 +732,8 @@ def run_loop(rest_minutes: int, rss_only=False, drip_only=False,
             logger.info("All stocks at target -- loop finished, exiting.")
             return
         time.sleep(rest_minutes * 60)
-
-
+ 
+ 
 def maybe_run_daily_on_startup() -> None:
     """Call from app.py. Non-blocking, once per day, reloader-safe if app.py
     already guards WERKZEUG_RUN_MAIN (keep that guard)."""
@@ -733,10 +745,10 @@ def maybe_run_daily_on_startup() -> None:
     logger.info("Starting daily ingestion in background thread...")
     threading.Thread(target=run_daily, daemon=True,
                      name="ingestion-daily").start()
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(
         description="Ingestion: daily run, bulk fill loop, feed checks, "
@@ -759,7 +771,7 @@ if __name__ == "__main__":
                          "minutes between them (0 = single pass). "
                          "Exits on its own when every stock hits the target.")
     args = ap.parse_args()
-
+ 
     if args.check_feeds:
         check_feeds()
     elif args.ensure_sector:

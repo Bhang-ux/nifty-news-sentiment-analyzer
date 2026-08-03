@@ -57,6 +57,12 @@ class ScrapedArticle(Base):
     llm_sentiment_label = Column(String, nullable=True)
     llm_analysis_json = Column(Text, nullable=True)  # Store full Gemini JSON response
  
+    # FinBERT (Phase 2) -- separate from VADER/Gemini above. finbert_label uses
+    # FinBERT's own casing ('positive'/'negative'/'neutral') at storage time,
+    # normalized to Title Case only when compared against VADER's labels.
+    finbert_label = Column(String, nullable=True, index=True)
+    finbert_score = Column(Float, nullable=True)
+ 
     # Kept for backward compatibility with existing code that reads these directly
     # (e.g. a sector-level article's "primary" sector, or a quick single-value check).
     # For the authoritative, complete stock<->sector relationship, use the
@@ -114,6 +120,11 @@ def _migrate_add_missing_columns():
         logger.info("Migrating: adding 'source' column to scraped_articles (existing DB, additive, safe).")
         with engine.begin() as conn:  # begin() auto-commits on success, auto-rolls-back on error --
             conn.execute(text("ALTER TABLE scraped_articles ADD COLUMN source VARCHAR"))  # works on SQLAlchemy 1.4 and 2.0
+    if "finbert_label" not in existing_columns:
+        logger.info("Migrating: adding 'finbert_label'/'finbert_score' columns to scraped_articles.")
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE scraped_articles ADD COLUMN finbert_label VARCHAR"))
+            conn.execute(text("ALTER TABLE scraped_articles ADD COLUMN finbert_score FLOAT"))
  
  
 def create_db_and_tables():
