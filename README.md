@@ -1,167 +1,131 @@
-Nifty News Sentiment Analyzer
+# Nifty News Sentiment Analyzer
 
-Real-time Indian equity news intelligence platform — scrapes, scores, and analyses financial news sentiment across NIFTY sectors and individual stocks using dual NLP engines (VADER + Google Gemini).
+A financial intelligence platform tracking sentiment across 22 NIFTY sectors and 252 stocks — ingestion, dual sentiment scoring (VADER + FinBERT), grounded RAG Q&A, price backtesting, and a LangGraph agent that routes questions across all of it.
 
-Built as part of an ICICI Bank internship project to demonstrate applied NLP, web scraping, and financial data engineering on Indian equity markets.
+Built as an ICICI Bank internship project, extended into a full applied-NLP/AI-engineering platform demonstrating retrieval-augmented generation, transformer-based sentiment analysis, statistical backtesting, and agentic tool orchestration on real Indian equity market data.
 
-What It Does
+---
+
+## What it does
+
 Financial news is a leading indicator — narratives shift before prices move. This platform:
 
-Aggregates real Indian financial news from multiple sources (NewsAPI, GNews, on-demand fetching)
-Scores every article using VADER (fast lexical NLP) for immediate sentiment scores
-Sends article batches to Google Gemini for deep contextual analysis — themes, risks, opportunities
-Presents daily sentiment trend charts, Gemini AI summaries, and per-article breakdowns
-Supports both sector-level (Nifty IT, Nifty Bank, etc.) and stock-level (TCS, HDFC Bank, etc.) analysis
-Allows on-demand article fetching for any stock/sector — fetches fresh articles in real time
+- **Ingests** real Indian financial news continuously across three complementary sources, each doing what it's actually good at
+- **Scores** every article with both VADER (fast, lexicon-based) and FinBERT (transformer, finance-domain-trained), on the same text window, so the two are genuinely comparable
+- **Answers free-form questions** via grounded RAG — semantic retrieval over the corpus, cited generation, no hallucination-by-default
+- **Backtests** whether sentiment actually predicts next-day stock returns, via Pearson correlation, comparing VADER's signal against FinBERT's
+- **Routes multi-part questions** through a LangGraph agent that decides, autonomously, which of RAG/sentiment-lookup/price-fetch tools a question actually needs — and combines results across tools for genuinely cross-cutting questions
 
+---
 
-Architecture
-┌─────────────────────────────────────────────────────────┐
-│                    Flask Web App                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐  │
-│  │ Sector Batch │  │ Stock Drill  │  │  Ad-hoc       │  │
-│  │ Analysis     │  │ Down         │  │  Fetch+Analyse│  │
-│  └──────┬───────┘  └──────┬───────┘  └───────┬───────┘  │
-└─────────┼─────────────────┼──────────────────┼──────────┘
-          │                 │                  │
-          ▼                 ▼                  ▼
-┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐
-│  SQLite DB      │  │  VADER Scorer   │  │ OnDemandFetcher  │
-│  (news_data.db) │  │  (nltk)         │  │ GNews + httpx    │
-│  567+ articles  │  │  Instant score  │  │ newspaper4k      │
-└────────┬────────┘  └────────┬────────┘  └──────────────────┘
-         │                   │
-         ▼                   ▼
-┌─────────────────────────────────────────┐
-│         Google Gemini API               │
-│  Deep analysis: themes, risks,          │
-│  opportunities, sentiment summary       │
-└─────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│         Frontend (Chart.js)             │
-│  Daily sentiment line chart             │
-│  Per-article VADER score cards          │
-│  Gemini AI analysis panel               │
-└─────────────────────────────────────────┘
+## Architecture
 
-Tech Stack
-LayerTechnologyWeb FrameworkFlask 3.1Database ORMSQLAlchemy 1.4 + SQLiteSentiment (Fast)VADER (nltk)Sentiment (Deep)Google Gemini 2.5 ProNews Source 1NewsAPI.orgNews Source 2GNews (Google News RSS)Article Fetchinghttpx (async) + newspaper4kJS RenderingPlaywright (Chromium headless)Frontend ChartsChart.jsStock PricesyfinanceData Processingpandas, numpy
+```
+                            Flask Web App (app.py)
+                                       |
+        +--------------+--------------+--------------+--------------+
+        |              |              |              |              |
+   Sector/Stock    Ad-hoc Fetch    /api/ask       /api/agent    /api/update-keys
+   Analysis         + Analysis     (RAG Q&A)      (LangGraph)
+   (VADER+Gemini)                     |               |
+        |               |             v               v
+        |               |        rag.py           agent.py
+        |               |        BGE embed        router->tool
+        |               |        cosine            ->synthesiser
+        |               |        retrieval          loop (<=4)
+        |               |             |               |
+        +---------------+-------------+---------------+
+                         |
+                         v
+              SQLite (WAL mode) -- news_data.db
+              scraped_articles, article_sectors, article_chunks
+                         ^
+                         |
+              ingestion.py (standalone, runs independent of Flask)
 
-Project Structure
-nifty-news-sentiment-analyzer/
-├── app.py                          # Flask app — all routes and business logic
-├── config.py                       # Loads API keys from .env (never hardcoded)
-├── on_demand_fetcher.py            # Article fetcher using GNews + httpx (replaces Scrapy)
-├── requirements.txt                # Minimal clean dependencies
-├── .env.example                    # Template for API keys
-│
-├── utils/
-│   ├── database_models.py          # SQLAlchemy ScrapedArticle model
-│   ├── db_crud.py                  # Database query functions
-│   ├── sentiment_analyzer.py       # VADER scoring
-│   ├── gemini_utils.py             # Gemini API calls + NIFTY sector config
-│   └── newsapi_helpers.py          # NewsAPI.org integration
-│
-├── templates/
-│   └── index.html                  # Single-page Flask template
-│
-├── static/
-│   ├── js/main.js                  # Frontend JS — form handling, Chart.js rendering
-│   └── css/style.css               # Styling
-│
-└── news_scrapers/                  # Scrapy project (Moneycontrol spider)
-    └── news_scrapers/
-        └── spiders/
-            └── moneycontrol_spider.py   # Spider (currently blocked by Moneycontrol)
+              Tier A: RSS (daily, free, unlimited)
+              Tier B: Google News drip (rate-limited, freshness-targeted)
+              Tier C: NewsAPI (on-demand only, budget-tracked)
 
-Setup & Installation
-Prerequisites
+              Every save -> VADER scored -> RAG-embedded -> FinBERT-scored
+              (all delta-safe, all automatic)
 
-Python 3.10+
-A free Gemini API key
-A free NewsAPI.org key (100 requests/day free tier)
+              backtest.py -> sentiment(t) vs return(t+1), Pearson r,
+                              VADER vs FinBERT, via resolve_tickers.py's
+                              verified name->ticker mapping
+```
 
-1. Clone and install
-bashgit clone https://github.com/YOUR_USERNAME/nifty-news-sentiment-analyzer.git
-cd nifty-news-sentiment-analyzer
+---
 
-python -m venv venv
+## The four phases
 
-# Windows
-venv\Scripts\activate
+### Phase 0 -- Ingestion (foundation)
+`ingestion.py` -- one file, three tiers:
+- **RSS** (14 publisher feeds -- Economic Times, Moneycontrol, LiveMint, BusinessLine): daily, free, unlimited, captures the fresh news flow
+- **Google News search drip**: keyless discovery per stock, encrypted-URL decoding, exponential backoff, keeps every stock's coverage topped up, worst-covered first
+- **NewsAPI**: on-demand only, never scheduled -- reserved for when Flask detects thin coverage for a user-requested stock/sector, tracked against a 90/day budget
 
-# Mac/Linux
-source venv/bin/activate
+Every article saved goes through one shared path: URL dedupe, multi-sector tagging (a stock can genuinely belong to multiple sectors -- modeled with a proper many-to-many join table, not a single column), VADER scored immediately, then automatically picked up for RAG embedding and FinBERT scoring -- all delta-safe, so re-running costs nothing when there's nothing new.
 
+### Phase 1 -- Grounded RAG Q&A
+`rag.py`:
+- Chunking: paragraph-first, ~300 words/50-word overlap, sentence-level fallback for oversized paragraphs
+- Embeddings: local `BAAI/bge-small-en-v1.5` via `sentence-transformers` -- no API rate limits, free, runs on CPU
+- Storage: SQLite BLOB + NumPy brute-force cosine similarity (sized deliberately -- a few thousand chunks doesn't need a vector database; the migration path exists if that changes)
+- Retrieval: SQL metadata pre-filter (stock/sector/date) *then* vector ranking on the survivors, plus a small recency bonus
+- Generation: Gemini with a strict grounding prompt -- numbered sources, mandatory citations, explicit instruction to say "the sources don't contain this" rather than guess
+
+### Phase 2 -- FinBERT benchmark + price backtest
+`finbert_benchmark.py`: runs `ProsusAI/finbert` (inference only, no training) on every article, on the *same* text window VADER uses (`utils/sentiment_analyzer.py`'s `prepare_scoring_text()` -- one shared source of truth, so the two scorers are never comparing different inputs). Computes agreement %, surfaces real disagreement examples.
+
+`backtest.py`: per stock, `sentiment(t)` correlated against `return(t+1)` -- not same-day (that mostly measures news reacting to price, not predicting it), and returns, not raw price levels (which trend, producing fake correlation from shared drift rather than genuine signal). Filtered to stocks with real article coverage and real trading liquidity. VADER's and FinBERT's series compared head-to-head.
+
+`resolve_tickers.py`: company names in the corpus aren't stock tickers -- this resolves and verifies real NSE symbols against live yfinance data before backtest.py trusts them.
+
+### Phase 3 -- LangGraph agent
+`agent.py`: a genuine graph, not a fixed pipeline -- `router -> tool -> router (loop) -> synthesiser`. The router (an LLM call) decides, per question, which of three tools to invoke:
+- `rag_answer` -- qualitative why/what-happened questions, grounded with citations
+- `sentiment_lookup` -- current average sentiment, computed fresh from the database
+- `price_fetch` -- recent returns and volatility, computed fresh from yfinance
+
+Capped at 4 router<->tool round-trips (an agent that can loop must also be guaranteed to stop). Tool failures return text the router can react to, not a crash. A purely qualitative question resolves with one `rag_answer` call, identical to plain RAG; a genuinely cross-cutting question ("did the bad news hurt the stock?") pulls sentiment *and* price and composes both into one answer neither tool alone could produce.
+
+---
+
+## Setup
+
+```bash
 pip install -r requirements.txt
-python -m playwright install chromium
-python -m nltk.downloader vader_lexicon
-2. Configure API keys
-bashcp .env.example .env
-Edit .env:
-GEMINI_API_KEY=your_google_gemini_api_key
-NEWSAPI_ORG_API_KEY=your_newsapi_org_key
-FLASK_SECRET_KEY=any_long_random_string
-3. Populate the news database
-bashpython populate_from_newsapi.py
-This fetches ~500-700 articles covering all major NIFTY sectors (IT, Bank, FMCG, Auto, Pharma, Energy, Metal) for the last 30 days. Takes ~30 seconds.
-4. Run the app
-bashpython -m flask run --port=5003
-Open http://localhost:5003
+```
 
-How to Use
-Batch Sector Analysis
+Create a `.env` file at the project root:
+```
+NEWSAPI_ORG_API_KEY=your_key
+GEMINI_API_KEY=your_key
+FLASK_SECRET_KEY=some_long_random_string
+```
 
-Select "Batch Sector Sentiment Analysis (DB)" from Operation Mode
-Pick one or more sectors (e.g. Nifty Bank, Nifty IT)
-Set date range
-Click Run Operation
+Run:
+```bash
+python app.py
+```
 
-Shows: average VADER sentiment, Gemini sector summary, article count, risk/opportunity breakdown.
-Stock Drill-Down
-After running sector analysis, expand any sector result and select individual stocks to get stock-specific sentiment.
-Ad-hoc Analysis + Fresh Scrape
+Ingestion starts automatically in the background on startup (once/day, safe to leave running alongside development). Or run it standalone, independent of Flask:
+```bash
+python ingestion.py
+```
 
-Select "Ad-hoc Stock/Sector Analysis (+Scrape)" from Operation Mode
-Set Target Type (Stock or Sector) and enter a name (e.g. TCS, Nifty Energy)
-Check "Trigger Fresh Scrape" to fetch articles published in your date range in real time
-Click Run Operation
+Before backtesting, resolve real tickers once:
+```bash
+python resolve_tickers.py
+python backtest.py
+```
 
-The on-demand fetcher searches GNews, fetches full article text via httpx, scores with VADER, and sends to Gemini — all live.
+---
 
-Features
+## Known, stated limitations
 
-15 NIFTY sectors covered: IT, Bank, FMCG, Auto, Pharma, Energy, Financial Services, Metal, Realty, CPSE, Commodities, Consumer Durables, Healthcare, Infrastructure, Media
-150+ stocks individually configurable
-Dual NLP pipeline: VADER for speed, Gemini for depth
-Daily sentiment chart: spot trend reversals visually
-On-demand fetching: get fresh articles for any target in real time
-Session-based API key management: update keys without restarting
-Processing log: real-time UI log of every operation step
-
-
-API Keys & Cost
-ServiceFree TierUsed ForGoogle Gemini1,500 req/day (Flash), 50/day (Pro)Deep sentiment analysisNewsAPI.org100 req/day, last 30 daysBulk article populationGNews100 req/dayOn-demand article searchyfinanceUnlimited (rate limited)Stock price chart overlay
-The app works without Gemini (VADER still scores everything) and without NewsAPI (GNews still fetches on demand).
-
-Known Limitations
-
-Moneycontrol spider blocked: The Scrapy spider for Moneycontrol returns "Access Denied" — replaced by GNews + httpx pipeline which works reliably.
-NewsAPI truncation: Free tier truncates article content to 200 characters, reducing VADER accuracy slightly. GNews on-demand fetches full text.
-Gemini quota: Free tier resets daily at midnight UTC. VADER analysis always works regardless.
-
-
-Future Upgrades
-
- FinBERT: Replace VADER with HuggingFace FinBERT (fine-tuned on financial text) for higher accuracy
- Article clustering: sentence-transformers + KMeans to auto-group articles by topic
- APScheduler: Automated nightly article refresh at 2 AM
- Alembic migrations: Schema versioning for safe DB upgrades
- Economic Times spider: Second Scrapy spider for wider news coverage
- Named Entity Recognition: Auto-extract company names from articles
-
-
-License
-MIT License — free to use, modify, and distribute.
+- `related_stock` is single-valued -- an article naming multiple companies credits one; all its relevant *sectors* are still fully tagged via the many-to-many join table
+- The ad-hoc analysis route calls NewsAPI directly, bypassing the budget tracker other routes respect -- a known, accepted gap, documented in code
+- Backtest correlation thresholds are currently relaxed below the ideal (reflecting the corpus's ingestion history so far) -- reliability improves as more days of history accumulate
+- The LangGraph router uses prompted JSON rather than native function-calling, a deliberate choice given constraints on live-testing the exact function-calling schema during development; native function-calling is a reasonable future upgrade

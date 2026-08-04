@@ -47,4 +47,35 @@ FROM scraped_articles
 ORDER BY char_length DESC
 LIMIT 20; #For top 20 length articles
 
+SELECT 
+    id,
+    headline,
+    related_stock,
+    COALESCE(publication_date, download_date) AS date,
+    vader_score,
+    finbert_label,
+    finbert_score,
+    finbert_continuous,
+    SUBSTR(article_text, 1, 300) AS article_preview,
+    url
+FROM scraped_articles
+WHERE finbert_continuous IS NOT NULL
+ORDER BY date DESC;#For FinBERT
+
+SELECT 
+    id,
+    headline,
+    related_stock,
+    COALESCE(publication_date, download_date) AS date,
+    vader_score,
+    finbert_continuous,
+    ABS(vader_score - finbert_continuous) AS abs_difference,
+    finbert_label,
+    SUBSTR(article_text, 1, 300) AS article_preview,
+    url
+FROM scraped_articles
+WHERE finbert_continuous IS NOT NULL 
+  AND vader_score IS NOT NULL
+ORDER BY abs_difference DESC; #for abs diff analysis
+
 python ingestion.py --drip-only --minimum 50 --max-stocks 252 --loop 20

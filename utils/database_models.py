@@ -60,8 +60,13 @@ class ScrapedArticle(Base):
     # FinBERT (Phase 2) -- separate from VADER/Gemini above. finbert_label uses
     # FinBERT's own casing ('positive'/'negative'/'neutral') at storage time,
     # normalized to Title Case only when compared against VADER's labels.
+    # finbert_score = confidence of the WINNING label only (0 to 1, direction-less).
+    # finbert_continuous = P(positive) - P(negative), range -1 to +1 -- the
+    # actual equivalent to VADER's compound score, needed for Day 6's backtest
+    # correlation (can't correlate returns against a discrete label).
     finbert_label = Column(String, nullable=True, index=True)
     finbert_score = Column(Float, nullable=True)
+    finbert_continuous = Column(Float, nullable=True, index=True)
  
     # Kept for backward compatibility with existing code that reads these directly
     # (e.g. a sector-level article's "primary" sector, or a quick single-value check).
@@ -125,6 +130,10 @@ def _migrate_add_missing_columns():
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE scraped_articles ADD COLUMN finbert_label VARCHAR"))
             conn.execute(text("ALTER TABLE scraped_articles ADD COLUMN finbert_score FLOAT"))
+    if "finbert_continuous" not in existing_columns:
+        logger.info("Migrating: adding 'finbert_continuous' column to scraped_articles.")
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE scraped_articles ADD COLUMN finbert_continuous FLOAT"))
  
  
 def create_db_and_tables():

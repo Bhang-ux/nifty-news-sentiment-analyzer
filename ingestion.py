@@ -279,8 +279,13 @@ def _extract(url: str) -> str:
  
  
 def _vader(headline: str, text: str) -> float:
+    # Same window sentiment_analyzer.prepare_scoring_text() defines -- what
+    # FinBERT sees too. Keeps every NEW article's VADER score comparable to
+    # its FinBERT score from the moment it's ingested, not just historically
+    # (rescale_vader.py fixed existing rows once; this stops the mismatch
+    # from ever recurring for new ones).
     return sentiment_analyzer.get_vader_sentiment_score(
-        f"{headline} {text[:3000]}")
+        sentiment_analyzer.prepare_scoring_text(headline, text))
  
  
 def _naive_utc(dt: datetime | None) -> datetime | None:
@@ -699,7 +704,18 @@ def run_daily(force=False, rss_only=False, drip_only=False,
             rag.embed_new_articles()
         except Exception as e:
             logger.error(f"RAG embedding step failed: {e}")
-
+ 
+        # Same reasoning, same delta-safe pattern, for FinBERT: only articles
+        # with finbert_continuous still NULL get scored, so this is a fast
+        # no-op on days with nothing new. Without this hook, new articles
+        # would keep arriving with a VADER score but no FinBERT score at all
+        # until someone remembered to run finbert_benchmark.py by hand.
+        try:
+            import finbert_benchmark
+            finbert_benchmark.score_new_articles()
+        except Exception as e:
+            logger.error(f"FinBERT scoring step failed: {e}")
+ 
     logger.info("=" * 60)
  
  

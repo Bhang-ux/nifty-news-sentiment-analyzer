@@ -10,6 +10,17 @@ SQLAlchemy==1.4.52
 nltk==3.9.1
 google-genai
  
+# FinBERT (Phase 2)
+transformers
+torch
+ 
+# RAG (Phase 1)
+sentence-transformers
+ 
+# LangGraph Agent (Phase 3)
+langgraph
+langchain-google-genai
+ 
 # News Data Sources
 newsapi-python==0.2.7
  
@@ -19,6 +30,7 @@ yfinance==0.2.63
 # Data Processing
 pandas==2.3.0
 numpy==2.3.1
+scipy
  
 # Web Scraping through Gnews
 unidecode
@@ -30,9 +42,6 @@ news-please
 selenium
 undetected-chromedriver
 requests
- 
-# RAG
-sentence-transformers
-
-#Finbert Analysis
-Transformers==4.30.2
+feedparser
+trafilatura
+googlenewsdecoder

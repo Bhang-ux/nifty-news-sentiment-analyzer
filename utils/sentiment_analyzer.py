@@ -2,9 +2,9 @@
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import logging
-
+ 
 logger = logging.getLogger(__name__)
-
+ 
 # Download VADER lexicon if not already present
 try:
     nltk.data.find('sentiment/vader_lexicon.zip')
@@ -17,10 +17,30 @@ except Exception as e:
         nltk.download('vader_lexicon', quiet=True)
     except Exception as e_download:
         logger.error(f"Failed to download NLTK VADER lexicon: {e_download}")
-
-
+ 
+ 
 _vader_analyzer_instance = None
-
+ 
+# The ONE place the "how much text do we score" window is defined. VADER
+# (ingestion.py's _vader()) and FinBERT (finbert_benchmark.py) both import
+# this rather than each hardcoding their own window -- the H.G. Infra case
+# happened specifically because they used to disagree on this (3000 chars
+# vs 500), and VADER's longer window picked up unrelated trailing
+# boilerplate FinBERT never saw. One shared function means that class of
+# bug can't recur.
+SCORING_TEXT_CHARS = 500
+ 
+ 
+def prepare_scoring_text(headline: str, article_text: str,
+                         max_chars: int = SCORING_TEXT_CHARS) -> str:
+    """headline + first max_chars of body -- the exact text any sentiment
+    scorer (VADER or FinBERT) should score, so their inputs are always
+    comparable, not just their models."""
+    headline = (headline or "").strip()
+    body = (article_text or "")[:max_chars].strip()
+    return f"{headline}. {body}" if headline else body
+ 
+ 
 def get_vader_analyzer():
     global _vader_analyzer_instance
     if _vader_analyzer_instance is None:
@@ -41,7 +61,7 @@ def get_vader_analyzer():
             logger.error(f"Failed to initialize SentimentIntensityAnalyzer: {e}")
             return None
     return _vader_analyzer_instance
-
+ 
 def get_vader_sentiment_score(text):
     """
     Analyzes the sentiment of a given text using VADER.
@@ -50,7 +70,7 @@ def get_vader_sentiment_score(text):
     """
     if not text or not isinstance(text, str) or not text.strip():
         return 0.0
-
+ 
     analyzer = get_vader_analyzer()
     if not analyzer:
         logger.warning("VADER analyzer not available. Returning neutral score.")
@@ -62,7 +82,7 @@ def get_vader_sentiment_score(text):
     except Exception as e:
         logger.error(f"Error during VADER sentiment analysis for text '{text[:50]}...': {e}")
         return 0.0
-
+ 
 def get_average_vader_score(scores_list):
     """
     Calculates the average of a list of VADER scores.
@@ -74,7 +94,7 @@ def get_average_vader_score(scores_list):
     if not valid_scores:
         return 0.0
     return sum(valid_scores) / len(valid_scores)
-
+ 
 def get_sentiment_label_from_score(score, threshold_positive=0.05, threshold_negative=-0.05):
     """
     Categorizes a sentiment score into 'Positive', 'Negative', or 'Neutral'.
